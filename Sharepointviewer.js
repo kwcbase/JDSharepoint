@@ -1,5 +1,5 @@
 (() => {
-  // ../tmp/widget-builds/a90ede93-aeaa-4790-a372-d16ef2df2e0f/widget-entry.tsx
+  // ../tmp/widget-builds/9e4e1fa2-3567-4fd2-8a58-6b4a66826f19/widget-entry.tsx
   var VARIABLES = [{ name: "site_url", type: "string", title: "SharePoint site URL", default: "https://moosetoque.sharepoint.com/sites/TeamMoose" }, { name: "widget_title", type: "string", title: "Widget Title", default: "Team Moose" }, { name: "library_name", type: "string", title: "Library Name", default: "Documents" }, { name: "max_results", type: "number", title: "Items per folder", default: 100 }, { name: "login_button_text", type: "string", title: "Sign-in Button Text", default: "Sign in with Microsoft" }];
   var CONFIG_SCHEMA = { type: "object", properties: { site_url: { type: "string", title: "SharePoint site URL", default: "https://moosetoque.sharepoint.com/sites/TeamMoose" }, widget_title: { type: "string", title: "Widget Title", default: "Team Moose" }, library_name: { type: "string", title: "Library Name", default: "Documents" }, max_results: { type: "number", title: "Items per folder", default: 100 }, login_button_text: { type: "string", title: "Sign-in Button Text", default: "Sign in with Microsoft" } } };
   var UI_SCHEMA = { max_results: { "ui:widget": "updown" } };
@@ -1007,13 +1007,69 @@
               const resp = await fetch(siteEndpoint, { method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
               if (!resp.ok) {
                 const text = await resp.text();
-                throw new Error("Site lookup failed: " + resp.status + " " + text);
+                if (resp.status === 400 || resp.status === 404) {
+                  try {
+                    const rootResp = await fetch("https://graph.microsoft.com/v1.0/sites/root?$select=webUrl", { method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
+                    if (!rootResp.ok) {
+                      renderError("Site lookup failed: " + resp.status + " " + text);
+                      return;
+                    }
+                    const rootJson = await rootResp.json();
+                    const tenantWeb = rootJson && rootJson.webUrl ? String(rootJson.webUrl) : "";
+                    let tenantHost = "";
+                    try {
+                      tenantHost = tenantWeb ? new URL(tenantWeb).hostname : "";
+                    } catch (e) {
+                      tenantHost = "";
+                    }
+                    if (tenantHost && tenantHost.toLowerCase() !== host.toLowerCase()) {
+                      const retryEndpoint = `https://graph.microsoft.com/v1.0/sites/${tenantHost}:${sitePath}`;
+                      const retryResp = await fetch(retryEndpoint, { method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
+                      if (retryResp.ok) {
+                        const retryJson = await retryResp.json();
+                        siteId = retryJson.id;
+                        if (!siteId)
+                          throw new Error("Site id not found");
+                        currentSiteId = siteId;
+                      } else {
+                        const retryText = await retryResp.text();
+                        errorEl.innerHTML = "";
+                        const shell = document.createElement("div");
+                        shell.className = "preview-panel";
+                        const nav = createNavButtons();
+                        shell.appendChild(nav);
+                        const m1 = document.createElement("div");
+                        m1.style.marginTop = "12px";
+                        m1.textContent = "Your Microsoft account belongs to " + tenantHost + ", but the configured site is on " + host + ". Sign in with the account for " + host + ", or change the SharePoint site URL.";
+                        shell.appendChild(m1);
+                        const m2 = document.createElement("div");
+                        m2.style.marginTop = "8px";
+                        m2.style.color = "#6b7a73";
+                        m2.style.fontSize = "12px";
+                        m2.textContent = retryText || text || "";
+                        shell.appendChild(m2);
+                        errorEl.appendChild(shell);
+                        showOnly(errorEl);
+                        return;
+                      }
+                    } else {
+                      renderError("Site lookup failed: " + resp.status + " " + text);
+                      return;
+                    }
+                  } catch (e) {
+                    renderError("Site lookup failed: " + resp.status + " " + text);
+                    return;
+                  }
+                } else {
+                  throw new Error("Site lookup failed: " + resp.status + " " + text);
+                }
+              } else {
+                const js = await resp.json();
+                siteId = js.id;
+                if (!siteId)
+                  throw new Error("Site id not found");
+                currentSiteId = siteId;
               }
-              const js = await resp.json();
-              siteId = js.id;
-              if (!siteId)
-                throw new Error("Site id not found");
-              currentSiteId = siteId;
             } catch (e) {
               renderError("Failed to resolve site: " + e.message);
               return;
@@ -1052,7 +1108,7 @@
       configurationSchema: CONFIG_SCHEMA,
       uiSchema: UI_SCHEMA,
       blockLevel: "block",
-      iconUrl: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzMzMzMzIiBzdHJva2Utd2lkdGg9IjIiPjxwYXRoIGQ9Ik0zIDdoNmwyIDJoMTB2OGEyIDIgMCAwIDEtMiAySDN6Ii8+PHBhdGggZD0iTTcgMTNoMTAiLz48L3N2Zz4="
+      iconUrl: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzMzMzMzIiBzdHJva2Utd2lkdGg9IjIiPjxyZWN0IHg9IjMiIHk9IjYiIHdpZHRoPSI3IiBoZWlnaHQ9IjEyIiByeD0iMS4yIi8+PHJlY3QgeD0iMTQiIHk9IjYiIHdpZHRoPSI3IiBoZWlnaHQ9IjgiIHJ4PSIxLjIiLz48cGF0aCBkPSJNNyA2VjRhMSAxIDAgMCAxIDEtMWg4Ii8+PC9zdmc+"
     },
     author: "ai-builder",
     version: "1.0.0"
