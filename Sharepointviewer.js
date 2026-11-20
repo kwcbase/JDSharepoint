@@ -1,5 +1,5 @@
 (() => {
-  // ../tmp/widget-builds/0c657702-00bf-4601-bdc0-afe226882456/widget-entry.tsx
+  // ../tmp/widget-builds/a90ede93-aeaa-4790-a372-d16ef2df2e0f/widget-entry.tsx
   var VARIABLES = [{ name: "site_url", type: "string", title: "SharePoint site URL", default: "https://moosetoque.sharepoint.com/sites/TeamMoose" }, { name: "widget_title", type: "string", title: "Widget Title", default: "Team Moose" }, { name: "library_name", type: "string", title: "Library Name", default: "Documents" }, { name: "max_results", type: "number", title: "Items per folder", default: 100 }, { name: "login_button_text", type: "string", title: "Sign-in Button Text", default: "Sign in with Microsoft" }];
   var CONFIG_SCHEMA = { type: "object", properties: { site_url: { type: "string", title: "SharePoint site URL", default: "https://moosetoque.sharepoint.com/sites/TeamMoose" }, widget_title: { type: "string", title: "Widget Title", default: "Team Moose" }, library_name: { type: "string", title: "Library Name", default: "Documents" }, max_results: { type: "number", title: "Items per folder", default: 100 }, login_button_text: { type: "string", title: "Sign-in Button Text", default: "Sign in with Microsoft" } } };
   var UI_SCHEMA = { max_results: { "ui:widget": "updown" } };
@@ -40,7 +40,9 @@
 .name-cell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px}
 .meta-small{color:#4c6a60;font-size:12px}
 .preview-panel{margin-top:12px;background:linear-gradient(180deg,#ffffff,#fbfffe);border-radius:10px;padding:12px;border:1px solid rgba(6,18,10,0.04)}
+.nav-row{display:flex;gap:8px}
 .back-btn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:#f1fbf6;color:#06472f;border:none;cursor:pointer;font-weight:700}
+.sitepages-btn{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:#eaf7ef;color:#06472f;border:none;cursor:pointer;font-weight:700}
 .preview-iframe{width:100%;height:600px;border:0;border-radius:8px;margin-top:10px}
 .empty-note{color:#3c5a4f}
 .heading-page{font-size:20px;font-weight:800;color:#083f2e;margin-top:8px}
@@ -232,6 +234,10 @@
           let currentSiteId = null;
           let effectiveLibraryName = configLibraryName;
           let startPage = null;
+          let token = null;
+          let pageHistory = [];
+          let currentRenderedPage = null;
+          let previewDelegationAttached = false;
           async function fetchDriveId(token, siteId) {
             const drivesUrl = `https://graph.microsoft.com/v1.0/sites/${siteId}/drives?$select=id,name`;
             const r = await fetch(drivesUrl, { method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
@@ -298,6 +304,16 @@
           }
           function renderError(message) {
             errorEl.textContent = message;
+            errorEl.innerHTML = "";
+            const shell = document.createElement("div");
+            shell.className = "preview-panel";
+            const nav = createNavButtons();
+            shell.appendChild(nav);
+            const msg = document.createElement("div");
+            msg.style.marginTop = "12px";
+            msg.textContent = message;
+            shell.appendChild(msg);
+            errorEl.appendChild(shell);
             showOnly(errorEl);
           }
           function renderEmpty(message) {
@@ -348,7 +364,7 @@
             if (isFolder) {
               svg.innerHTML = "<path d='M3 8a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z'></path>";
             } else {
-              svg.innerHTML = "<rect x='3' y='4' width='14' height='16' rx='2'></rect><path d='M7 8h6M7 12h6M7 16h6'/>";
+              svg.innerHTML = "<rect x='3' y='4' width='14' height='16' rx='2'></rect><path d='M7 8h6M7 12h6M7 16h6'/></svg>";
             }
             return svg;
           }
@@ -497,39 +513,23 @@
             previewEl.innerHTML = "";
             const shell = document.createElement("div");
             shell.className = "preview-panel";
-            const back = document.createElement("button");
-            back.className = "back-btn";
-            back.textContent = "Back to files";
-            back.addEventListener("click", () => {
-              if (currentDriveId) {
-                loadFolder(currentDriveId, currentFolderId, currentPathStack);
-              } else {
-                showOnly(contentEl);
-              }
-            });
-            shell.appendChild(back);
+            const nav = createNavButtons();
+            shell.appendChild(nav);
             const iframe = document.createElement("iframe");
             iframe.className = "preview-iframe";
             iframe.src = src;
             shell.appendChild(iframe);
             previewEl.appendChild(shell);
+            currentRenderedPage = null;
+            attachPreviewDelegation();
             showOnly(previewEl);
           }
           function previewFallback(item, message) {
             previewEl.innerHTML = "";
             const shell = document.createElement("div");
             shell.className = "preview-panel";
-            const back = document.createElement("button");
-            back.className = "back-btn";
-            back.textContent = "Back to files";
-            back.addEventListener("click", () => {
-              if (currentDriveId) {
-                loadFolder(currentDriveId, currentFolderId, currentPathStack);
-              } else {
-                showOnly(contentEl);
-              }
-            });
-            shell.appendChild(back);
+            const nav = createNavButtons();
+            shell.appendChild(nav);
             const msg = document.createElement("div");
             msg.style.marginTop = "12px";
             msg.textContent = "Preview unavailable: " + message;
@@ -545,6 +545,8 @@
             link.style.fontWeight = "700";
             shell.appendChild(link);
             previewEl.appendChild(shell);
+            currentRenderedPage = null;
+            attachPreviewDelegation();
             showOnly(previewEl);
           }
           function sanitizeHtml(dirty) {
@@ -578,21 +580,39 @@
             });
             return doc.body.innerHTML || "";
           }
+          async function fetchAllPages(siteId) {
+            let pages = [];
+            let next = `https://graph.microsoft.com/v1.0/sites/${siteId}/pages?$select=id,title,name,webUrl&$top=200`;
+            while (next) {
+              const r = await fetch(next, { method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
+              if (!r.ok) {
+                const t = await r.text();
+                throw new Error("Pages lookup failed: " + r.status + " " + t);
+              }
+              const payload = await r.json();
+              const page = Array.isArray(payload.value) ? payload.value : [];
+              for (const p of page)
+                pages.push(p);
+              next = payload["@odata.nextLink"] || null;
+            }
+            return pages;
+          }
           async function openSitePage(item) {
             try {
               renderLoading();
               if (!currentSiteId)
                 throw new Error("Site not resolved");
               const fileName = item && item.name ? String(item.name).toLowerCase() : "";
-              const pagesUrl = `https://graph.microsoft.com/v1.0/sites/${currentSiteId}/pages?$select=id,title,name,webUrl`;
-              const r = await fetch(pagesUrl, { method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
-              if (!r.ok) {
-                const t = await r.text();
-                throw new Error("Pages lookup failed: " + r.status + " " + t);
-              }
-              const js = await r.json();
-              const pages = Array.isArray(js.value) ? js.value : [];
-              const match = pages.find((p) => String(p.name || "").toLowerCase() === fileName);
+              const pages = await fetchAllPages(currentSiteId);
+              const match = pages.find((p) => {
+                try {
+                  const lhs = decodeURIComponent(String(p.name || ""));
+                  const rhs = decodeURIComponent(String(fileName || ""));
+                  return lhs.toLowerCase() === rhs.toLowerCase();
+                } catch (e) {
+                  return String(p.name || "").toLowerCase() === String(fileName || "").toLowerCase();
+                }
+              });
               if (!match)
                 throw new Error("Matching site page not found");
               const pageId = match.id;
@@ -607,17 +627,8 @@
               previewEl.innerHTML = "";
               const shell = document.createElement("div");
               shell.className = "preview-panel";
-              const back = document.createElement("button");
-              back.className = "back-btn";
-              back.textContent = "Back to files";
-              back.addEventListener("click", () => {
-                if (currentDriveId) {
-                  loadFolder(currentDriveId, currentFolderId, currentPathStack);
-                } else {
-                  showOnly(contentEl);
-                }
-              });
-              shell.appendChild(back);
+              const nav = createNavButtons();
+              shell.appendChild(nav);
               const heading = document.createElement("div");
               heading.className = "heading-page";
               heading.textContent = match.title || match.name || "";
@@ -708,11 +719,13 @@
                               const t = document.createElement("div");
                               t.className = "webpart-news-title";
                               const link = document.createElement("a");
-                              link.href = "#";
+                              link.href = post.webUrl || "#";
                               link.textContent = post.title || post.name || "";
                               link.addEventListener("click", (ev) => {
                                 ev.preventDefault();
                                 if (post.name) {
+                                  if (currentRenderedPage)
+                                    pageHistory.push(currentRenderedPage);
                                   openSitePageByName(post.name);
                                 }
                               });
@@ -785,27 +798,22 @@
                 contentBox.appendChild(fallback);
               }
               previewEl.appendChild(contentBox);
+              currentRenderedPage = match.name || match.title || null;
+              attachPreviewDelegation();
               showOnly(previewEl);
             } catch (e) {
               previewEl.innerHTML = "";
               const shell = document.createElement("div");
               shell.className = "preview-panel";
-              const back = document.createElement("button");
-              back.className = "back-btn";
-              back.textContent = "Back to files";
-              back.addEventListener("click", () => {
-                if (currentDriveId) {
-                  loadFolder(currentDriveId, currentFolderId, currentPathStack);
-                } else {
-                  showOnly(contentEl);
-                }
-              });
-              shell.appendChild(back);
+              const nav = createNavButtons();
+              shell.appendChild(nav);
               const msg = document.createElement("div");
               msg.style.marginTop = "12px";
               msg.textContent = "Page view error: " + (e && e.message ? e.message : String(e));
               shell.appendChild(msg);
               previewEl.appendChild(shell);
+              currentRenderedPage = null;
+              attachPreviewDelegation();
               showOnly(previewEl);
             }
           }
@@ -814,15 +822,16 @@
               renderLoading();
               if (!currentSiteId)
                 throw new Error("Site not resolved");
-              const pagesUrl = `https://graph.microsoft.com/v1.0/sites/${currentSiteId}/pages?$select=id,title,name,webUrl`;
-              const r = await fetch(pagesUrl, { method: "GET", headers: { Authorization: "Bearer " + token, Accept: "application/json" } });
-              if (!r.ok) {
-                const t = await r.text();
-                throw new Error("Pages lookup failed: " + r.status + " " + t);
-              }
-              const js = await r.json();
-              const pages = Array.isArray(js.value) ? js.value : [];
-              const target = pages.find((p) => String(p.name || "").toLowerCase() === String(name || "").toLowerCase());
+              const pages = await fetchAllPages(currentSiteId);
+              const target = pages.find((p) => {
+                try {
+                  const lhs = decodeURIComponent(String(p.name || ""));
+                  const rhs = decodeURIComponent(String(name || ""));
+                  return lhs.toLowerCase() === rhs.toLowerCase();
+                } catch (e) {
+                  return String(p.name || "").toLowerCase() === String(name || "").toLowerCase();
+                }
+              });
               if (!target)
                 throw new Error("Start page not found");
               const fakeItem = { name: target.name };
@@ -831,26 +840,106 @@
               previewEl.innerHTML = "";
               const shell = document.createElement("div");
               shell.className = "preview-panel";
-              const back = document.createElement("button");
-              back.className = "back-btn";
-              back.textContent = "Back to files";
-              back.addEventListener("click", () => {
-                if (currentDriveId) {
-                  loadFolder(currentDriveId, currentFolderId, currentPathStack);
-                } else {
-                  showOnly(contentEl);
-                }
-              });
-              shell.appendChild(back);
+              const nav = createNavButtons();
+              shell.appendChild(nav);
               const msg = document.createElement("div");
               msg.style.marginTop = "12px";
               msg.textContent = "Start page error: " + (e && e.message ? e.message : String(e));
               shell.appendChild(msg);
               previewEl.appendChild(shell);
+              currentRenderedPage = null;
+              attachPreviewDelegation();
               showOnly(previewEl);
             }
           }
-          let token = null;
+          function createNavButtons() {
+            const wrapper = document.createElement("div");
+            wrapper.className = "nav-row";
+            const back = document.createElement("button");
+            back.className = "back-btn";
+            back.textContent = "Back";
+            back.addEventListener("click", () => {
+              if (pageHistory.length) {
+                const prev = pageHistory.pop();
+                if (prev) {
+                  openSitePageByName(prev);
+                } else {
+                  if (currentDriveId) {
+                    loadFolder(currentDriveId, currentFolderId, currentPathStack);
+                  } else {
+                    showOnly(contentEl);
+                  }
+                }
+              } else {
+                if (currentDriveId) {
+                  loadFolder(currentDriveId, currentFolderId, currentPathStack);
+                } else {
+                  showOnly(contentEl);
+                }
+              }
+            });
+            const siteBtn = document.createElement("button");
+            siteBtn.className = "sitepages-btn";
+            siteBtn.textContent = "Site pages";
+            siteBtn.addEventListener("click", () => {
+              pageHistory = [];
+              if (currentDriveId) {
+                loadFolder(currentDriveId, null, []);
+              } else {
+                showOnly(contentEl);
+              }
+            });
+            wrapper.appendChild(back);
+            wrapper.appendChild(siteBtn);
+            return wrapper;
+          }
+          function attachPreviewDelegation() {
+            if (previewDelegationAttached)
+              return;
+            previewDelegationAttached = true;
+            previewEl.addEventListener("click", function(ev) {
+              const a = ev.target.closest && ev.target.closest("a");
+              if (!a)
+                return;
+              const href = a.getAttribute("href") || "";
+              if (!href)
+                return;
+              let resolved;
+              try {
+                resolved = new URL(href, configSiteUrl);
+              } catch (e) {
+                return;
+              }
+              const path = resolved.pathname || "";
+              if (/\/sitepages\/.*\.aspx$/i.test(path)) {
+                ev.preventDefault();
+                const seg = path.split("/").filter(Boolean).pop() || "";
+                const name = decodeURIComponent(seg);
+                if (currentRenderedPage)
+                  pageHistory.push(currentRenderedPage);
+                openSitePageByName(name);
+                return;
+              }
+              if (!a.target)
+                a.target = "_blank";
+              if (!a.rel)
+                a.rel = "noopener noreferrer";
+            });
+          }
+          function previewFallbackSimple(message) {
+            previewEl.innerHTML = "";
+            const shell = document.createElement("div");
+            shell.className = "preview-panel";
+            const nav = createNavButtons();
+            shell.appendChild(nav);
+            const msg = document.createElement("div");
+            msg.style.marginTop = "12px";
+            msg.textContent = message;
+            shell.appendChild(msg);
+            previewEl.appendChild(shell);
+            attachPreviewDelegation();
+            showOnly(previewEl);
+          }
           async function run() {
             renderLoading();
             titleEl.textContent = configTitle;
@@ -963,7 +1052,7 @@
       configurationSchema: CONFIG_SCHEMA,
       uiSchema: UI_SCHEMA,
       blockLevel: "block",
-      iconUrl: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzMzMzMzIiBzdHJva2Utd2lkdGg9IjIiPjxyZWN0IHg9IjMiIHk9IjQiIHdpZHRoPSIxOCIgaGVpZ2h0PSIxNiIgcng9IjIiLz48cGF0aCBkPSJNNyA4aDEwTTcgMTJoMTBNNyAxNmg2Ii8+PC9zdmc+"
+      iconUrl: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzMzMzMzIiBzdHJva2Utd2lkdGg9IjIiPjxwYXRoIGQ9Ik0zIDdoNmwyIDJoMTB2OGEyIDIgMCAwIDEtMiAySDN6Ii8+PHBhdGggZD0iTTcgMTNoMTAiLz48L3N2Zz4="
     },
     author: "ai-builder",
     version: "1.0.0"
